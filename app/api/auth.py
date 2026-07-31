@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,15 +36,19 @@ async def login(payload: LoginRequest) -> LoginResponse:
     return auth_service.login(email=str(payload.email), password=payload.password)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout() -> None:
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+async def logout() -> Response:
     """Stateless JWTs — the frontend just deletes the token.
 
     This endpoint exists so the frontend's Axios interceptor has something
     to POST to on logout; when we add token revocation (Redis blocklist),
     we'll deny the token here.
+
+    FastAPI's 204 status enforces no response body, so we return the
+    `Response` class explicitly rather than `None` (which FastAPI would
+    otherwise try to serialize).
     """
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---- Google OAuth callback --------------------------------------------------
