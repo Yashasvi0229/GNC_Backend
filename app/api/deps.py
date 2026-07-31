@@ -9,12 +9,19 @@ untrusted claims off a token.
 In Phase 2 (multi-user) we'll swap the internals: `get_current_admin`
 becomes `get_current_user` and does a DB lookup + role check. The public
 interface stays the same, so route handlers don't change.
+
+We use FastAPI's `HTTPBearer` security scheme (rather than reading the
+Authorization header manually) so Swagger UI renders an "Authorize" button
+that developers can click to paste a token once and have it applied to
+every protected endpoint.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import Header, status
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
 from app.core.constants import UserRole
@@ -31,21 +38,20 @@ class CurrentAdmin:
     role: str
 
 
-def _extract_bearer_token(authorization: str | None) -> str:
-    """Parse `Authorization: Bearer <token>`. Raises UnauthorizedError if malformed."""
-    if not authorization:
-        raise UnauthorizedError("Missing Authorization header.")
-    parts = authorization.split(maxsplit=1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise UnauthorizedError("Authorization header must be 'Bearer <token>'.")
-    token = parts[1].strip()
-    if not token:
-        raise UnauthorizedError("Empty Bearer token.")
-    return token
+# `auto_error=False` — we raise our OWN UnauthorizedError with a clean
+# JSON envelope instead of letting HTTPBearer raise its default 403.
+_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="Paste the `access_token` returned by /api/auth/login.",
+)
 
 
 async def get_current_admin(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(_bearer_scheme),
+    ],
 ) -> CurrentAdmin:
     """FastAPI dependency — returns the current admin, or 401/403.
 
@@ -53,8 +59,10 @@ async def get_current_admin(
     env-var credentials. The JWT's `sub` claim MUST match `settings.admin_email`
     — this prevents a stolen dev token from being valid in prod, or vice-versa.
     """
-    token = _extract_bearer_token(authorization)
-    claims = decode_access_token(token)
+    if credentials is None or not credentials.credentials:
+        raise UnauthorizedError("Missing or invalid Authorization header.")
+
+    claims = decode_access_token(credentials.credentials)
 
     # Cross-check: the token's subject must match the currently configured
     # admin. If the admin email is rotated in env, all old tokens die.
