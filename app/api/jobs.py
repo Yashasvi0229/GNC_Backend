@@ -56,13 +56,24 @@ async def create_gmail_search(
         client_id=payload.client_id,
     )
 
-    # Dispatch — either queue to Celery worker or run inline (eager mode)
-    from app.workers.email_tasks import process_gmail_search
-    async_result = process_gmail_search.delay(str(job_id))
-
-    log.info("gmail_search_job_queued",
-             job_id=str(job_id), celery_task=async_result.id,
-             eager=settings.celery_task_always_eager)
+    # Dispatch — three modes, mutually exclusive:
+    # 1. Real Celery worker running → `.delay()` queues to Redis, worker picks up
+    # 2. `CELERY_TASK_ALWAYS_EAGER=true` → `.delay()` tries to run inline via
+    #    `asyncio.run()` inside the task, which BREAKS because FastAPI already
+    #    has an event loop running. So we detect eager mode and spawn the
+    #    async implementation as a background task instead. Behaviourally
+    #    identical from the client's POV (they still get 202 immediately).
+    if settings.celery_task_always_eager:
+        # Import here to avoid pulling worker code at module load if unused.
+        import asyncio
+        from app.workers.email_tasks import _process_gmail_search_async
+        asyncio.create_task(_process_gmail_search_async(str(job_id), None))
+        log.info("gmail_search_job_started_eager", job_id=str(job_id))
+    else:
+        from app.workers.email_tasks import process_gmail_search
+        async_result = process_gmail_search.delay(str(job_id))
+        log.info("gmail_search_job_queued",
+                 job_id=str(job_id), celery_task=async_result.id)
 
     job = await job_repo.get_by_id(db, job_id)
     assert job is not None
