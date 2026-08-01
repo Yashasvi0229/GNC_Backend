@@ -65,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(gmail_router, prefix="/api/gmail", tags=["gmail"])
 
     # Step 4 — jobs, emails, websockets
+    from app.api.debug import router as debug_router
     from app.api.emails import router as emails_router
     from app.api.jobs import router as jobs_router
     from app.api.websockets import router as ws_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router,   prefix="/api/jobs", tags=["jobs"])
     app.include_router(emails_router, prefix="/api",      tags=["emails"])
     app.include_router(ws_router,     prefix="/api",      tags=["websockets"])
+    app.include_router(debug_router,  prefix="/api/debug", tags=["debug"])
 
     # Future routers (Step 5 onwards):
     # app.include_router(invoices_router, prefix="/api/invoices", tags=["invoices"])
