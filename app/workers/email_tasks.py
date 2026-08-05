@@ -387,20 +387,28 @@ async def _find_or_create_claim(
     """Locate an existing claim or create a stub one so emails have somewhere
     to hang. In Phase 1 we auto-create a placeholder Client if none provided
     (so single-tenant testing works out of the box).
+
+    IMPORTANT — this function is idempotent by design: it can be safely
+    called from a re-run of the same job. Previous versions had a race:
+    if the job was retried after crashing mid-transaction, the claim from
+    the first attempt already existed, but we skipped the `find_by_client_
+    and_claim_no` check because `client_id` was None at that point (only
+    resolved later, when we auto-provision the placeholder). That would
+    trigger a UniqueViolationError on the (client_id, claim_no) uq index.
+
+    The fix: resolve client_id FIRST, then do the lookup, so we always
+    match an existing row before attempting insert.
     """
-    # Try to find first
     from sqlalchemy import select
+
+    # ---- Step 1: try gnc_file_no lookup (globally unique, no client needed)
     if gnc_file_no:
         claim = await claim_repo.find_by_gnc_file_no(session, gnc_file_no)
         if claim:
             return claim
 
-    if client_id and claim_no:
-        claim = await claim_repo.find_by_client_and_claim_no(session, client_id, claim_no)
-        if claim:
-            return claim
-
-    # Need a client to create a claim — auto-provision a placeholder if none.
+    # ---- Step 2: resolve client_id BEFORE the (client_id, claim_no) lookup
+    # so a retry finds the existing claim instead of re-inserting.
     if client_id is None:
         stmt = select(Client).where(Client.name == "Unassigned").limit(1)
         result = await session.execute(stmt)
@@ -422,6 +430,13 @@ async def _find_or_create_claim(
             await session.flush()
         client_id = placeholder.id
 
+    # ---- Step 3: NOW look up by (client_id, claim_no) — idempotent path
+    if claim_no:
+        claim = await claim_repo.find_by_client_and_claim_no(session, client_id, claim_no)
+        if claim:
+            return claim
+
+    # ---- Step 4: fresh claim — synthesize any missing identifiers
     resolved_gnc = gnc_file_no or (claim_no or "auto") + "-" + uuid.uuid4().hex[:6]
     resolved_claim_no = claim_no or "auto-" + uuid.uuid4().hex[:6]
     resolved_file_name = file_name or resolved_claim_no
